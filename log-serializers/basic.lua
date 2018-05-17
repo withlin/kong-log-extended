@@ -2,6 +2,11 @@ local tablex = require "pl.tablex"
 
 local _M = {}
 
+local tcp_log_extended_ctx = ngx.ctx.tcp_log_extended or {}
+local udp_log_extended_ctx = ngx.ctx.udp_log_extended or {}
+local file_log_extended_ctx = ngx.ctx.file_log_extended or {}
+local sys_log_extended_ctx = ngx.ctx.sys_log_extended or {}
+
 local EMPTY = tablex.readonly({})
 
 function _M.serialize(ngx)
@@ -12,7 +17,7 @@ function _M.serialize(ngx)
       consumer_id = ngx.ctx.authenticated_credential.consumer_id
     }
   end
-   local tcp_log_extended_ctx = ngx.ctx.tcp_log_extended or {}
+   
   return {
     request = {
       uri = ngx.var.request_uri,
@@ -21,14 +26,20 @@ function _M.serialize(ngx)
       method = ngx.req.get_method(), -- http method
       headers = ngx.req.get_headers(),
       size = ngx.var.request_length,
-      body = tcp_log_extended_ctx.req_body 
+      tcp_log_extended_body = tcp_log_extended_ctx.req_body,
+      udp_log_extended_body = udp_log_extended_ctx.req_body,
+      file_log_extended_body = file_log_extended_ctx.req_body,
+      sys_log_extended_body = sys_log_extended_ctx.req_body,
     },
     upstream_uri = ngx.var.upstream_uri,
     response = {
       status = ngx.status,
       headers = ngx.resp.get_headers(),
       size = ngx.var.bytes_sent,
-      body = tcp_log_extended_ctx.res_body
+      tcp_log_extended_body = tcp_log_extended_ctx.res_body,
+      udp_log_extended_body = udp_log_extended_ctx.res_body,
+      file_log_extended_body = file_log_extended_ctx.res_body,
+      sys_log_extended_body = sys_log_extended_ctx.res_body
     },
     tries = (ngx.ctx.balancer_address or EMPTY).tries,
     latencies = {

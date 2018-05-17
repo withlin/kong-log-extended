@@ -1,53 +1,94 @@
 local BasePlugin = require "kong.plugins.base_plugin"
-local serializer = require "kong.plugins.log-serializers.basic"
+local basic_serializer = require "kong.plugins.log-serializers.basic"
 local cjson = require "cjson"
+local req_read_body = ngx.req.read_body
+local req_get_body_data = ngx.req.get_body_data
 
-local timer_at = ngx.timer.at
-local udp = ngx.socket.udp
+local TcpLogHandler = BasePlugin:extend()
 
-local UdpLogHandler = BasePlugin:extend()
+TcpLogHandler.PRIORITY = 7
+TcpLogHandler.VERSION = "0.1.0"
 
-UdpLogHandler.PRIORITY = 8
-UdpLogHandler.VERSION = "0.1.0"
-
-local function log(premature, conf, str)
+local function log(premature, conf, message)
   if premature then
     return
   end
 
-  local sock = udp()
-  sock:settimeout(conf.timeout)
+  local ok, err
+  local host = conf.host
+  local port = conf.port
+  local timeout = conf.timeout
+  local keepalive = conf.keepalive
 
-  local ok, err = sock:setpeername(conf.host, conf.port)
+  local sock = ngx.socket.tcp()
+  sock:settimeout(timeout)
+
+  ok, err = sock:connect(host, port)
   if not ok then
-    ngx.log(ngx.ERR, "[udp-log] could not connect to ", conf.host, ":", conf.port, ": ", err)
+    ngx.log(ngx.ERR, "[tcp-log] failed to connect to " .. host .. ":" .. tostring(port) .. ": ", err)
     return
   end
 
-  ok, err = sock:send(str)
-  if not ok then
-    ngx.log(ngx.ERR, " [udp-log] could not send data to ", conf.host, ":", conf.port, ": ", err)
-  else
-    ngx.log(ngx.DEBUG, "[udp-log] sent: ", str)
+  if conf.tls then
+    ok, err = sock:sslhandshake(true, conf.tls_sni, false)
+    if not ok then
+      ngx.log(ngx.ERR, "[tcp-log] failed to perform TLS handshake to ",
+                       host, ":", port, ": ", err)
+      return
+    end
   end
 
-  ok, err = sock:close()
+  ok, err = sock:send(cjson.encode(message) .. "\r\n")
   if not ok then
-    ngx.log(ngx.ERR, "[udp-log] could not close ", conf.host, ":", conf.port, ": ", err)
+    ngx.log(ngx.ERR, "[tcp-log] failed to send data to " .. host .. ":" .. tostring(port) .. ": ", err)
   end
-end
 
-function UdpLogHandler:new()
-  UdpLogHandler.super.new(self, "udp-log")
-end
-
-function UdpLogHandler:log(conf)
-  UdpLogHandler.super.log(self)
-
-  local ok, err = timer_at(0, log, conf, cjson.encode(serializer.serialize(ngx)))
+  ok, err = sock:setkeepalive(keepalive)
   if not ok then
-    ngx.log(ngx.ERR, "[udp-log] could not create timer: ", err)
+    ngx.log(ngx.ERR, "[tcp-log] failed to keepalive to " .. host .. ":" .. tostring(port) .. ": ", err)
+    return
   end
 end
 
-return UdpLogHandler
+
+
+function TcpLogHandler:new()
+  TcpLogHandler.super.new(self, "tcp-log")
+end
+
+function TcpLogHandler:access(conf)
+TcpLogHandler.super.access(self)
+
+  
+  local ctx = ngx.ctx
+  ctx.tcp_log_extended = { req_body = "", res_body = "" }
+  if conf.log_bodies then
+    req_read_body()
+    ctx.tcp_log_extended.req_body = req_get_body_data()
+  end
+end
+
+function TcpLogHandler:body_filter(conf)
+  TcpLogHandler.super.body_filter(self)
+
+  if conf.log_bodies then
+    local chunk = ngx.arg[1]
+    local ctx = ngx.ctx
+    local res_body = ctx.tcp_log_extended and ctx.tcp_log_extended.res_body or ""
+    res_body = res_body .. (chunk or "")
+    ctx.tcp_log_extended.res_body = res_body
+  end
+
+end
+
+
+function TcpLogHandler:log(conf)
+  TcpLogHandler.super.log(self)
+  local message = basic_serializer.serialize(ngx)
+  local ok, err = ngx.timer.at(0, log, conf, message)
+  if not ok then
+    ngx.log(ngx.ERR, "[tcp-log] failed to create timer: ", err)
+  end
+end
+
+return TcpLogHandler
